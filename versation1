@@ -1,0 +1,169 @@
+#include <Wire.h>
+#include <LiquidCrystal.h>
+#include <SD.h>
+#include <MPU6050.h>
+
+// MPU6050 sensor variables
+MPU6050 mpu;
+int16_t AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
+
+// LCD variables
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+
+// SD card variables
+File myFile;
+const int chipSelect = 10;
+
+// Cadence variables
+volatile int stepCount = 0;
+unsigned long stepTime = 0;
+unsigned long prevStepTime = 0;
+
+// Gait speed variables
+float distance = 0.0;
+unsigned long startTime = 0;
+unsigned long endTime = 0;
+
+// Step length variables
+float stepLength = 0.0;
+float gaitSpeed = 0.0;
+
+// Step time variables
+unsigned long stepTotalTime = 0;
+
+// Swing time variables
+unsigned long swingTime = 0;
+unsigned long prevSwingTime = 0;
+volatile bool footOnGround = true;
+
+void setup() {
+  Wire.begin();
+  mpu.initialize();
+  lcd.begin(16, 2);
+  Serial.begin(9600);
+
+  pinMode(7, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(7), countSteps, RISING);
+
+  if (!SD.begin(chipSelect)) {
+    lcd.print("SD Card failed");
+    return;
+  }
+
+  lcd.print("Initializing...");
+  delay(1000);
+  lcd.clear();
+  lcd.print("Ready!");
+}
+
+void loop() {
+  // Read sensor data
+  mpu.getMotion6(&AcX, &AcY, &AcZ, &GyX, &GyY, &GyZ);
+
+  // Calculate Cadence
+  unsigned long currTime = millis();
+  if (currTime - prevStepTime > 500) {
+    detachInterrupt(digitalPinToInterrupt(7));
+    float cadence = stepCount * 120.0 / (currTime - prevStepTime);
+    lcd.setCursor(0, 0);
+    lcd.print("Cadence: ");
+    lcd.print(cadence);
+    lcd.print(" steps/min");
+    stepCount = 0;
+    prevStepTime = currTime;
+    attachInterrupt(digitalPinToInterrupt(7), countSteps, RISING);
+  }
+
+  // Calculate Gait speed and Step length
+  if (digitalRead(6) == HIGH) {
+    footOnGround = false;
+  }
+  else {
+    if (!footOnGround) {
+      footOnGround = true;
+      if (startTime == 0) {
+        startTime = millis();
+      }
+      else {
+        endTime = millis();
+        unsigned long deltaTime = endTime - startTime;
+        distance += 0.3; // assume each step is 30cm
+        gaitSpeed = distance / (deltaTime / 1000.0);
+        stepLength = gaitSpeed * (deltaTime / 1000.0) / stepCount;
+        startTime = endTime;
+      }
+    }
+  }
+
+  // Calculate Step time and Swing time
+  if (stepCount > 0) {
+    stepTotalTime = currTime - stepTime;
+    if (footOnGround) {
+      if (prevSwingTime > 0) {
+        swingTime = currTime - prevSwingTime;
+        prevSwingTime = 0;
+      }
+    }
+    else {
+      if (prevSwingTime == 0) {
+        prevSwingTime = currTime;
+      }
+    }
+  }
+  else {
+    distance = 0.0;
+    startTime = 0;
+    endTime = 0;
+  }
+
+  // Print results to Serial monitor
+  Serial.print("Cadence: ");
+  Serial.print(stepCount);
+  Serial.print(" steps/min");
+
+  Serial.print(" Gait Speed: ");
+  Serial.print(gaitSpeed);
+  Serial.print(" m/s");
+
+  Serial.print(" Step Length: ");
+  Serial.print(stepLength);
+  Serial.print(" m");
+
+  Serial.print(" Step Time: ");
+  Serial.print(stepTotalTime);
+  Serial.print(" ms");
+
+  Serial.print(" Swing Time: ");
+  Serial.print(swingTime);
+  Serial.print(" ms");
+
+  // Store results to SD card
+  myFile = SD.open("data.txt", FILE_WRITE);
+  myFile.print(stepCount);
+  myFile.print(",");
+  myFile.print(gaitSpeed);
+  myFile.print(",");
+  myFile.print(stepLength);
+  myFile.print(",");
+  myFile.print(stepTotalTime);
+  myFile.print(",");
+  myFile.print(swingTime);
+  myFile.println();
+  myFile.close();
+
+  // Display results on LCD
+  lcd.setCursor(0, 0);
+  lcd.print("Cadence: ");
+  lcd.print(stepCount);
+  lcd.print(" steps/min");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Gait Speed: ");
+  lcd.print(gaitSpeed);
+  lcd.print(" m/s");
+}
+
+void countSteps() {
+  stepCount++;
+  stepTime = millis();
+}
